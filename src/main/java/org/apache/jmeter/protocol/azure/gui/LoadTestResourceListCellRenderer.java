@@ -55,8 +55,7 @@ class LoadTestResourceListCellRenderer extends JPanel implements ListCellRendere
         if (value != null) {
             nameLabel.setText(value.getName());
             detailLabel.setText("Resource Group: " + value.getResourceGroup()
-                    + "  |  Location: " + value.getLocation()
-                    + "  |  Subscription: " + value.getSubscriptionId());
+                    + "  |  Location: " + value.getLocation());
         } else {
             nameLabel.setText("");
             detailLabel.setText("");

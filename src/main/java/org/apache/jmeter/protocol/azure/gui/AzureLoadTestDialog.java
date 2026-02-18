@@ -26,8 +26,10 @@ import java.awt.Frame;
 import java.util.List;
 
 import javax.swing.BorderFactory;
+import javax.swing.DefaultComboBoxModel;
 import javax.swing.DefaultListModel;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JList;
@@ -39,14 +41,17 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SwingWorker;
 
 import org.apache.jmeter.protocol.azure.service.AzureLoadTestingClient;
+import org.apache.jmeter.protocol.azure.service.AzureSubscription;
 import org.apache.jmeter.protocol.azure.service.LoadTestResource;
+import org.apache.jmeter.protocol.azure.service.LoadTestRunResult;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Modal dialog that displays Azure Load Testing resources and lets the user
- * select one to run a load test against the currently opened JMX file.
+ * Modal dialog that displays Azure subscriptions in a dropdown and
+ * Azure Load Testing resources in a list, letting the user select one
+ * to run a load test against the currently opened JMX file.
  */
 public class AzureLoadTestDialog extends JDialog {
     private static final long serialVersionUID = 1L;
@@ -55,6 +60,8 @@ public class AzureLoadTestDialog extends JDialog {
     private final AzureLoadTestingClient client;
     private final String jmxFilePath;
 
+    private final DefaultComboBoxModel<AzureSubscription> subscriptionModel = new DefaultComboBoxModel<>();
+    private final JComboBox<AzureSubscription> subscriptionCombo = new JComboBox<>(subscriptionModel);
     private final DefaultListModel<LoadTestResource> listModel = new DefaultListModel<>();
     private final JList<LoadTestResource> resourceList = new JList<>(listModel);
     private final JTextField testNameField = new JTextField(30);
@@ -69,34 +76,48 @@ public class AzureLoadTestDialog extends JDialog {
         this.jmxFilePath = jmxFilePath;
 
         initUI();
-        setSize(new Dimension(600, 500));
+        setSize(new Dimension(650, 550));
         setLocationRelativeTo(owner);
 
-        // Start loading resources immediately
-        loadResources();
+        // Start loading subscriptions immediately
+        loadSubscriptions();
     }
 
     private void initUI() {
         setLayout(new BorderLayout(10, 10));
 
         // --- Header ---
-        JPanel headerPanel = new JPanel(new BorderLayout());
+        JPanel headerPanel = new JPanel(new BorderLayout(5, 5));
         headerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 5, 10));
-        JLabel titleLabel = new JLabel("Select an Azure Load Testing Resource");
+
+        JLabel titleLabel = new JLabel("Run on Azure Load Testing");
         titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 14f));
         headerPanel.add(titleLabel, BorderLayout.NORTH);
 
         JLabel fileLabel = new JLabel("JMX File: " + jmxFilePath);
         fileLabel.setFont(fileLabel.getFont().deriveFont(Font.PLAIN, 11f));
-        headerPanel.add(fileLabel, BorderLayout.SOUTH);
+        headerPanel.add(fileLabel, BorderLayout.CENTER);
+
+        // Subscription dropdown
+        JPanel subPanel = new JPanel(new BorderLayout(5, 0));
+        subPanel.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
+        subPanel.add(new JLabel("Subscription: "), BorderLayout.WEST);
+        subscriptionCombo.setEnabled(false);
+        subPanel.add(subscriptionCombo, BorderLayout.CENTER);
+        headerPanel.add(subPanel, BorderLayout.SOUTH);
+
         add(headerPanel, BorderLayout.NORTH);
 
         // --- Resource list ---
         JPanel centerPanel = new JPanel(new BorderLayout(5, 5));
         centerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
+        JLabel resourceLabel = new JLabel("Load Testing Resources:");
+        resourceLabel.setFont(resourceLabel.getFont().deriveFont(Font.BOLD, 12f));
+        centerPanel.add(resourceLabel, BorderLayout.NORTH);
+
         resourceList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        resourceList.setVisibleRowCount(10);
+        resourceList.setVisibleRowCount(8);
         resourceList.setCellRenderer(new LoadTestResourceListCellRenderer());
         JScrollPane scrollPane = new JScrollPane(resourceList);
         centerPanel.add(scrollPane, BorderLayout.CENTER);
@@ -122,7 +143,7 @@ public class AzureLoadTestDialog extends JDialog {
         bottomPanel.add(statusLabel, BorderLayout.NORTH);
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        refreshButton.addActionListener(e -> loadResources());
+        refreshButton.addActionListener(e -> loadSubscriptions());
         runButton.addActionListener(e -> triggerTest());
         cancelButton.addActionListener(e -> dispose());
         runButton.setEnabled(false);
@@ -134,6 +155,14 @@ public class AzureLoadTestDialog extends JDialog {
 
         add(bottomPanel, BorderLayout.SOUTH);
 
+        // When subscription selection changes, load resources for that subscription
+        subscriptionCombo.addActionListener(e -> {
+            AzureSubscription selected = (AzureSubscription) subscriptionCombo.getSelectedItem();
+            if (selected != null) {
+                loadResources(selected.getSubscriptionId());
+            }
+        });
+
         // Enable run button only when a resource is selected
         resourceList.addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
@@ -142,17 +171,19 @@ public class AzureLoadTestDialog extends JDialog {
         });
     }
 
-    private void loadResources() {
-        statusLabel.setText("Loading Azure Load Testing resources...");
+    private void loadSubscriptions() {
+        statusLabel.setText("Loading Azure subscriptions...");
         setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
         refreshButton.setEnabled(false);
         runButton.setEnabled(false);
+        subscriptionCombo.setEnabled(false);
+        subscriptionModel.removeAllElements();
         listModel.clear();
 
-        new SwingWorker<List<LoadTestResource>, Void>() {
+        new SwingWorker<List<AzureSubscription>, Void>() {
             @Override
-            protected List<LoadTestResource> doInBackground() throws Exception {
-                return client.listResources();
+            protected List<AzureSubscription> doInBackground() throws Exception {
+                return client.listSubscriptions();
             }
 
             @Override
@@ -160,10 +191,52 @@ public class AzureLoadTestDialog extends JDialog {
                 setCursor(Cursor.getDefaultCursor());
                 refreshButton.setEnabled(true);
                 try {
+                    List<AzureSubscription> subs = get();
+                    if (subs.isEmpty()) {
+                        statusLabel.setText("No Azure subscriptions found. "
+                                + "Make sure you are logged in and have the right permissions.");
+                    } else {
+                        statusLabel.setText(subs.size() + " subscription(s) found. Select one to list resources.");
+                        for (AzureSubscription s : subs) {
+                            subscriptionModel.addElement(s);
+                        }
+                        subscriptionCombo.setEnabled(true);
+                        // Auto-select first subscription and trigger resource load
+                        if (subscriptionModel.getSize() > 0) {
+                            subscriptionCombo.setSelectedIndex(0);
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.error("Failed to list Azure subscriptions", ex);
+                    statusLabel.setText("Error: " + ex.getMessage());
+                    JOptionPane.showMessageDialog(AzureLoadTestDialog.this,
+                            "Failed to list subscriptions:\n" + ex.getMessage(),
+                            "Azure Load Testing Error",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void loadResources(String subscriptionId) {
+        statusLabel.setText("Loading resources for subscription...");
+        setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        runButton.setEnabled(false);
+        listModel.clear();
+
+        new SwingWorker<List<LoadTestResource>, Void>() {
+            @Override
+            protected List<LoadTestResource> doInBackground() throws Exception {
+                return client.listResourcesInSubscription(subscriptionId);
+            }
+
+            @Override
+            protected void done() {
+                setCursor(Cursor.getDefaultCursor());
+                try {
                     List<LoadTestResource> resources = get();
                     if (resources.isEmpty()) {
-                        statusLabel.setText("No Azure Load Testing resources found. "
-                                + "Make sure you have the right permissions.");
+                        statusLabel.setText("No Load Testing resources found in this subscription.");
                     } else {
                         statusLabel.setText(resources.size() + " resource(s) found. Select one and click 'Run Load Test'.");
                         for (LoadTestResource r : resources) {
@@ -201,9 +274,9 @@ public class AzureLoadTestDialog extends JDialog {
         refreshButton.setEnabled(false);
 
         String finalTestName = testName;
-        new SwingWorker<String, Void>() {
+        new SwingWorker<LoadTestRunResult, Void>() {
             @Override
-            protected String doInBackground() throws Exception {
+            protected LoadTestRunResult doInBackground() throws Exception {
                 return client.triggerLoadTest(selected, jmxFilePath, finalTestName);
             }
 
@@ -213,15 +286,17 @@ public class AzureLoadTestDialog extends JDialog {
                 refreshButton.setEnabled(true);
                 runButton.setEnabled(true);
                 try {
-                    String testRunId = get();
-                    statusLabel.setText("Test run started: " + testRunId);
-                    JOptionPane.showMessageDialog(AzureLoadTestDialog.this,
-                            "Load test started successfully!\n\n"
-                                    + "Test Run ID: " + testRunId + "\n"
-                                    + "Resource: " + selected.getName() + "\n\n"
-                                    + "You can monitor the test run in the Azure Portal.",
-                            "Load Test Started",
-                            JOptionPane.INFORMATION_MESSAGE);
+                    LoadTestRunResult result = get();
+                    statusLabel.setText("Test run started: " + result.getTestRunId());
+
+                    // Close the current dialog and open the viewer
+                    dispose();
+
+                    Frame ownerFrame = (Frame) getOwner();
+                    LoadTestRunViewerDialog viewer = new LoadTestRunViewerDialog(
+                            ownerFrame, result.getTestRunId(),
+                            selected.getName(), result.getPortalUrl());
+                    viewer.setVisible(true);
                 } catch (Exception ex) {
                     log.error("Failed to trigger load test", ex);
                     statusLabel.setText("Error: " + ex.getMessage());

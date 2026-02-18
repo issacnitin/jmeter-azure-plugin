@@ -17,8 +17,11 @@
 
 package org.apache.jmeter.protocol.azure.service;
 
+import java.time.Duration;
+
 import com.azure.core.credential.TokenCredential;
-import com.azure.identity.DefaultAzureCredentialBuilder;
+import com.azure.core.credential.TokenRequestContext;
+import com.azure.identity.AzureCliCredentialBuilder;
 import com.azure.identity.InteractiveBrowserCredentialBuilder;
 
 import org.slf4j.Logger;
@@ -73,20 +76,43 @@ public final class AzureAuthService {
     }
 
     private static TokenCredential createCredential() {
-        // Try DefaultAzureCredential first – works when Azure CLI / env vars / managed identity is set up
+        // Try Azure CLI credential first – fast and deterministic
+        System.out.println("[AzureAuth] Attempting Azure CLI credential...");
+        log.info("Attempting Azure CLI credential...");
         try {
-            TokenCredential defaultCred = new DefaultAzureCredentialBuilder().build();
-            log.info("Using DefaultAzureCredential for Azure authentication");
-            return defaultCred;
+            TokenCredential cliCred = new AzureCliCredentialBuilder().build();
+            TokenRequestContext ctx = new TokenRequestContext()
+                    .addScopes("https://management.azure.com/.default");
+            // Use a short timeout – if CLI isn't logged in this should fail fast
+            cliCred.getToken(ctx).block(Duration.ofSeconds(10));
+            System.out.println("[AzureAuth] Azure CLI credential succeeded");
+            log.info("Using AzureCliCredential for Azure authentication");
+            return cliCred;
         } catch (Exception e) {
-            log.info("DefaultAzureCredential not available, falling back to interactive browser login", e);
+            System.out.println("[AzureAuth] Azure CLI credential failed: " + e.getMessage());
+            log.info("AzureCliCredential not available: {}", e.getMessage());
         }
 
         // Fall back to interactive browser login
+        System.out.println("[AzureAuth] Falling back to interactive browser login...");
+        log.info("Falling back to InteractiveBrowserCredential");
         TokenCredential browserCred = new InteractiveBrowserCredentialBuilder()
                 .redirectUrl("http://localhost:8400")
                 .build();
-        log.info("Using InteractiveBrowserCredential for Azure authentication");
+        // Eagerly trigger the browser flow so the user logs in now
+        try {
+            System.out.println("[AzureAuth] Opening browser for Azure login...");
+            TokenRequestContext ctx = new TokenRequestContext()
+                    .addScopes("https://management.azure.com/.default");
+            browserCred.getToken(ctx).block(Duration.ofMinutes(5));
+            System.out.println("[AzureAuth] Interactive browser login succeeded");
+            log.info("InteractiveBrowserCredential login succeeded");
+        } catch (Exception e) {
+            System.out.println("[AzureAuth] Interactive browser login failed: " + e.getMessage());
+            log.error("InteractiveBrowserCredential login failed", e);
+            throw new RuntimeException("Azure authentication failed. "
+                    + "Please run 'az login' in a terminal or complete browser login.", e);
+        }
         return browserCred;
     }
 }

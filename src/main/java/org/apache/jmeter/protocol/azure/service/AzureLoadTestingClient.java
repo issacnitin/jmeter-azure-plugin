@@ -57,54 +57,78 @@ public final class AzureLoadTestingClient {
     }
 
     /**
-     * List all Azure Load Testing resources the authenticated identity can see
-     * across all subscriptions.
+     * List all Azure subscriptions the authenticated identity can access.
      *
-     * @return a list of {@link LoadTestResource} objects
+     * @return a list of {@link AzureSubscription} objects
      */
-    public List<LoadTestResource> listResources() {
-        log.info("Listing Azure Load Testing resources across all subscriptions...");
-        List<LoadTestResource> resources = new ArrayList<>();
+    public List<AzureSubscription> listSubscriptions() {
+        System.out.println("[AzureClient] Listing Azure subscriptions...");
+        log.info("Listing Azure subscriptions...");
+        List<AzureSubscription> subscriptions = new ArrayList<>();
 
         com.azure.core.management.profile.AzureProfile profile =
                 new com.azure.core.management.profile.AzureProfile(
                         null, null,
                         com.azure.core.management.AzureEnvironment.AZURE);
 
-        // List all accessible subscriptions first, then query each one
+        System.out.println("[AzureClient] Authenticating with ResourceManager...");
         ResourceManager.Authenticated authenticated =
                 ResourceManager.authenticate(credential, profile);
 
+        System.out.println("[AzureClient] Enumerating subscriptions...");
         authenticated.subscriptions().list().forEach(subscription -> {
             String subId = subscription.subscriptionId();
-            log.info("Checking subscription: {} ({})", subscription.displayName(), subId);
-            try {
-                LoadTestManager manager = LoadTestManager.authenticate(credential,
-                        new com.azure.core.management.profile.AzureProfile(
-                                null, subId,
-                                com.azure.core.management.AzureEnvironment.AZURE));
-
-                manager.loadTests().list().forEach(r -> {
-                    String id = r.id();
-                    String name = r.name();
-                    String resourceGroup = extractResourceGroup(id);
-                    String subscriptionId = extractSubscriptionId(id);
-                    String location = r.regionName();
-                    String dataPlaneUri = r.innerModel().dataPlaneUri();
-                    if (dataPlaneUri == null || dataPlaneUri.isBlank()) {
-                        dataPlaneUri = "https://" + UUID.randomUUID().toString().substring(0, 8)
-                                + "." + location + ".cnt-prod.loadtesting.azure.com";
-                    }
-                    resources.add(new LoadTestResource(id, name, resourceGroup,
-                            subscriptionId, location, dataPlaneUri));
-                });
-            } catch (Exception e) {
-                log.warn("Failed to list resources in subscription {}: {}",
-                        subId, e.getMessage());
-            }
+            String displayName = subscription.displayName();
+            System.out.println("[AzureClient]   Found subscription: " + displayName + " (" + subId + ")");
+            log.info("Found subscription: {} ({})", displayName, subId);
+            subscriptions.add(new AzureSubscription(subId, displayName));
         });
 
-        log.info("Found {} Azure Load Testing resource(s)", resources.size());
+        System.out.println("[AzureClient] Found " + subscriptions.size() + " subscription(s)");
+        log.info("Found {} subscription(s)", subscriptions.size());
+        return subscriptions;
+    }
+
+    /**
+     * List Azure Load Testing resources in a specific subscription.
+     *
+     * @param subscriptionId the subscription to query
+     * @return a list of {@link LoadTestResource} objects
+     */
+    public List<LoadTestResource> listResourcesInSubscription(String subscriptionId) {
+        System.out.println("[AzureClient] Listing Load Testing resources in subscription " + subscriptionId + "...");
+        log.info("Listing Load Testing resources in subscription {}...", subscriptionId);
+        List<LoadTestResource> resources = new ArrayList<>();
+
+        try {
+            LoadTestManager manager = LoadTestManager.authenticate(credential,
+                    new com.azure.core.management.profile.AzureProfile(
+                            null, subscriptionId,
+                            com.azure.core.management.AzureEnvironment.AZURE));
+
+            manager.loadTests().list().forEach(r -> {
+                String id = r.id();
+                String name = r.name();
+                String resourceGroup = extractResourceGroup(id);
+                String subId = extractSubscriptionId(id);
+                String location = r.regionName();
+                String dataPlaneUri = r.innerModel().dataPlaneUri();
+                if (dataPlaneUri == null || dataPlaneUri.isBlank()) {
+                    dataPlaneUri = "https://" + UUID.randomUUID().toString().substring(0, 8)
+                            + "." + location + ".cnt-prod.loadtesting.azure.com";
+                }
+                System.out.println("[AzureClient]   Found resource: " + name + " in " + resourceGroup + " (" + location + ")");
+                log.info("Found resource: {} in {} ({})", name, resourceGroup, location);
+                resources.add(new LoadTestResource(id, name, resourceGroup,
+                        subId, location, dataPlaneUri));
+            });
+        } catch (Exception e) {
+            System.out.println("[AzureClient] Failed to list resources in subscription " + subscriptionId + ": " + e.getMessage());
+            log.warn("Failed to list resources in subscription {}: {}", subscriptionId, e.getMessage());
+        }
+
+        System.out.println("[AzureClient] Found " + resources.size() + " resource(s) in subscription " + subscriptionId);
+        log.info("Found {} resource(s) in subscription {}", resources.size(), subscriptionId);
         return resources;
     }
 
@@ -115,15 +139,16 @@ public final class AzureLoadTestingClient {
      * @param resource    the target Azure Load Testing resource
      * @param jmxFilePath the path of the JMX file to upload
      * @param testName    human-readable name for the test
-     * @return the test run ID
+     * @return a {@link LoadTestRunResult} containing the test run ID and portal URL
      * @throws Exception if anything goes wrong
      */
-    public String triggerLoadTest(LoadTestResource resource, String jmxFilePath, String testName) throws Exception {
+    public LoadTestRunResult triggerLoadTest(LoadTestResource resource, String jmxFilePath, String testName) throws Exception {
         String endpoint = resource.getDataPlaneUri();
         if (!endpoint.startsWith("https://")) {
             endpoint = "https://" + endpoint;
         }
 
+        System.out.println("[AzureClient] Triggering load test on resource '" + resource.getName() + "' at endpoint '" + endpoint + "'");
         log.info("Triggering load test on resource '{}' at endpoint '{}'", resource.getName(), endpoint);
 
         // --- 1. Create the admin client ---
@@ -143,6 +168,7 @@ public final class AzureLoadTestingClient {
 
         BinaryData testPayload = BinaryData.fromString(MAPPER.writeValueAsString(testBody));
         adminClient.createOrUpdateTestWithResponse(testId, testPayload, new RequestOptions());
+        System.out.println("[AzureClient] Created test '" + testId + "'");
         log.info("Created test '{}'", testId);
 
         // --- 3. Upload the JMX file ---
@@ -150,10 +176,12 @@ public final class AzureLoadTestingClient {
         String fileName = jmxFile.getName();
         BinaryData fileData = BinaryData.fromFile(Path.of(jmxFilePath));
 
+        System.out.println("[AzureClient] Uploading JMX file '" + fileName + "'...");
         SyncPoller<BinaryData, BinaryData> uploadPoller = adminClient.beginUploadTestFile(
                 testId, fileName, fileData, new RequestOptions());
         uploadPoller.waitForCompletion();
         PollResponse<BinaryData> uploadResult = uploadPoller.poll();
+        System.out.println("[AzureClient] Uploaded JMX file '" + fileName + "' – status: " + uploadResult.getStatus());
         log.info("Uploaded JMX file '{}' – status: {}", fileName, uploadResult.getStatus());
 
         if (LongRunningOperationStatus.FAILED.equals(uploadResult.getStatus())) {
@@ -173,14 +201,54 @@ public final class AzureLoadTestingClient {
         runBody.put("description", "Triggered from Apache JMeter at " + java.time.Instant.now());
 
         BinaryData runPayload = BinaryData.fromString(MAPPER.writeValueAsString(runBody));
+        System.out.println("[AzureClient] Starting test run '" + testRunId + "'...");
         SyncPoller<BinaryData, BinaryData> runPoller = runClient.beginTestRun(
                 testRunId, runPayload, new RequestOptions());
 
         // Don't block waiting for the full run to complete – just confirm it started
         PollResponse<BinaryData> runResponse = runPoller.poll();
+        System.out.println("[AzureClient] Test run '" + testRunId + "' started – status: " + runResponse.getStatus());
         log.info("Test run '{}' started – status: {}", testRunId, runResponse.getStatus());
 
-        return testRunId;
+        // --- 5. Extract portalUrl from the test run response ---
+        String portalUrl = null;
+        try {
+            BinaryData responseData = runResponse.getValue();
+            if (responseData != null) {
+                String json = responseData.toString();
+                System.out.println("[AzureClient] Test run response: " + json);
+                log.info("Test run response: {}", json);
+                com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(json);
+                com.fasterxml.jackson.databind.JsonNode portalUrlNode = root.get("portalUrl");
+                if (portalUrlNode != null && !portalUrlNode.isNull()) {
+                    portalUrl = portalUrlNode.asText();
+                    System.out.println("[AzureClient] Portal URL: " + portalUrl);
+                    log.info("Portal URL: {}", portalUrl);
+                } else {
+                    System.out.println("[AzureClient] portalUrl not found in response, fetching test run...");
+                    // Try fetching the test run to get the portalUrl
+                    BinaryData getResponse = runClient.getTestRunWithResponse(testRunId, new RequestOptions())
+                            .getValue();
+                    if (getResponse != null) {
+                        String getJson = getResponse.toString();
+                        System.out.println("[AzureClient] Get test run response: " + getJson);
+                        log.info("Get test run response: {}", getJson);
+                        com.fasterxml.jackson.databind.JsonNode getRoot = MAPPER.readTree(getJson);
+                        com.fasterxml.jackson.databind.JsonNode urlNode = getRoot.get("portalUrl");
+                        if (urlNode != null && !urlNode.isNull()) {
+                            portalUrl = urlNode.asText();
+                            System.out.println("[AzureClient] Portal URL (from GET): " + portalUrl);
+                            log.info("Portal URL (from GET): {}", portalUrl);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("[AzureClient] Failed to extract portalUrl: " + e.getMessage());
+            log.warn("Failed to extract portalUrl from test run response", e);
+        }
+
+        return new LoadTestRunResult(testRunId, portalUrl);
     }
 
     private static String extractResourceGroup(String armId) {
