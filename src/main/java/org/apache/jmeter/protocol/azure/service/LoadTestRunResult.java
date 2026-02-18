@@ -24,10 +24,12 @@ package org.apache.jmeter.protocol.azure.service;
 public final class LoadTestRunResult {
     private final String testRunId;
     private final String portalUrl;
+    private final String endpoint;
 
-    public LoadTestRunResult(String testRunId, String portalUrl) {
+    public LoadTestRunResult(String testRunId, String portalUrl, String endpoint) {
         this.testRunId = testRunId;
         this.portalUrl = portalUrl;
+        this.endpoint = endpoint;
     }
 
     public String getTestRunId() {
@@ -42,8 +44,15 @@ public final class LoadTestRunResult {
         return portalUrl;
     }
 
+    /**
+     * The data-plane endpoint used to query test run status.
+     */
+    public String getEndpoint() {
+        return endpoint;
+    }
+
     @Override
     public String toString() {
-        return "LoadTestRunResult{testRunId='" + testRunId + "', portalUrl='" + portalUrl + "'}";
+        return "LoadTestRunResult{testRunId='" + testRunId + "', portalUrl='" + portalUrl + "', endpoint='" + endpoint + "'}";
     }
 }

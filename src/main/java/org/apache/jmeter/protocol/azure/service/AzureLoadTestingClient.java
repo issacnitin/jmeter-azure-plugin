@@ -248,7 +248,118 @@ public final class AzureLoadTestingClient {
             log.warn("Failed to extract portalUrl from test run response", e);
         }
 
-        return new LoadTestRunResult(testRunId, portalUrl);
+        return new LoadTestRunResult(testRunId, portalUrl, endpoint);
+    }
+
+    /**
+     * Stop / cancel a running test run.
+     *
+     * @param endpoint  the data-plane endpoint
+     * @param testRunId the test run ID to cancel
+     */
+    public void cancelTestRun(String endpoint, String testRunId) {
+        LoadTestRunClient runClient = new LoadTestRunClientBuilder()
+                .credential(credential)
+                .endpoint(endpoint)
+                .buildClient();
+
+        System.out.println("[AzureClient] Cancelling test run '" + testRunId + "'...");
+        log.info("Cancelling test run '{}'", testRunId);
+        runClient.stopTestRunWithResponse(testRunId, new RequestOptions());
+        System.out.println("[AzureClient] Cancel request sent for test run '" + testRunId + "'");
+        log.info("Cancel request sent for test run '{}'", testRunId);
+    }
+
+    /**
+     * Query the current status and metrics for a test run.
+     *
+     * @param endpoint  the data-plane endpoint
+     * @param testRunId the test run ID
+     * @return a {@link TestRunStatus} snapshot
+     */
+    public TestRunStatus getTestRunStatus(String endpoint, String testRunId) {
+        LoadTestRunClient runClient = new LoadTestRunClientBuilder()
+                .credential(credential)
+                .endpoint(endpoint)
+                .buildClient();
+
+        try {
+            BinaryData response = runClient.getTestRunWithResponse(testRunId, new RequestOptions())
+                    .getValue();
+            String json = response.toString();
+            com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(json);
+
+            TestRunStatus.Builder b = TestRunStatus.builder()
+                    .testRunId(textOrEmpty(root, "testRunId"))
+                    .displayName(textOrEmpty(root, "displayName"))
+                    .status(textOrEmpty(root, "status"))
+                    .portalUrl(textOrEmpty(root, "portalUrl"))
+                    .startDateTime(textOrEmpty(root, "startDateTime"))
+                    .endDateTime(textOrEmpty(root, "endDateTime"))
+                    .virtualUsers(longOrZero(root, "virtualUsers"))
+                    .durationMs(longOrZero(root, "duration"));
+
+            // Parse test run statistics (nested under testRunStatistics)
+            com.fasterxml.jackson.databind.JsonNode stats = root.get("testRunStatistics");
+            if (stats != null && stats.isObject()) {
+                // Aggregate across all sampler/transaction entries
+                double totalReqs = 0, successReqs = 0, failedReqs = 0;
+                double avgRt = 0, p90 = 0, p95 = 0, p99 = 0, errPct = 0, rps = 0;
+                int count = 0;
+
+                var fields = stats.fields();
+                while (fields.hasNext()) {
+                    var entry = fields.next();
+                    com.fasterxml.jackson.databind.JsonNode s = entry.getValue();
+                    totalReqs += doubleOrZero(s, "transaction");
+                    successReqs += doubleOrZero(s, "sampleCount") - doubleOrZero(s, "errorCount");
+                    failedReqs += doubleOrZero(s, "errorCount");
+                    avgRt += doubleOrZero(s, "meanResTime");
+                    p90 += doubleOrZero(s, "pct1ResTime");   // typically p90
+                    p95 += doubleOrZero(s, "pct2ResTime");   // typically p95
+                    p99 += doubleOrZero(s, "pct3ResTime");   // typically p99
+                    errPct += doubleOrZero(s, "errorPct");
+                    rps += doubleOrZero(s, "throughput");
+                    count++;
+                }
+
+                if (count > 0) {
+                    b.totalRequests(totalReqs)
+                            .successfulRequests(successReqs)
+                            .failedRequests(failedReqs)
+                            .avgResponseTimeMs(avgRt / count)
+                            .p90ResponseTimeMs(p90 / count)
+                            .p95ResponseTimeMs(p95 / count)
+                            .p99ResponseTimeMs(p99 / count)
+                            .errorPercentage(errPct / count)
+                            .requestsPerSecond(rps);
+                }
+            }
+
+            return b.build();
+        } catch (Exception e) {
+            System.out.println("[AzureClient] Failed to get test run status: " + e.getMessage());
+            log.warn("Failed to get test run status: {}", e.getMessage());
+            return TestRunStatus.builder()
+                    .testRunId(testRunId)
+                    .status("UNKNOWN")
+                    .build();
+        }
+    }
+
+    private static String textOrEmpty(com.fasterxml.jackson.databind.JsonNode root, String field) {
+        com.fasterxml.jackson.databind.JsonNode n = root.get(field);
+        return (n != null && !n.isNull()) ? n.asText() : "";
+    }
+
+    private static long longOrZero(com.fasterxml.jackson.databind.JsonNode root, String field) {
+        com.fasterxml.jackson.databind.JsonNode n = root.get(field);
+        return (n != null && !n.isNull()) ? n.asLong(0) : 0;
+    }
+
+    private static double doubleOrZero(com.fasterxml.jackson.databind.JsonNode root, String field) {
+        com.fasterxml.jackson.databind.JsonNode n = root.get(field);
+        return (n != null && !n.isNull()) ? n.asDouble(0) : 0;
     }
 
     private static String extractResourceGroup(String armId) {

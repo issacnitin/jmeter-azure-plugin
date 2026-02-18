@@ -44,20 +44,6 @@ dependencies {
     // Jackson for JSON processing
     implementation("com.fasterxml.jackson.core:jackson-core:2.18.2")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.18.2")
-
-    // JavaFX WebView for embedded browser rendering
-    val javafxVersion = "21.0.5"
-    val javafxPlatform = when {
-        org.gradle.internal.os.OperatingSystem.current().isWindows -> "win"
-        org.gradle.internal.os.OperatingSystem.current().isMacOsX -> "mac"
-        else -> "linux"
-    }
-    implementation("org.openjfx:javafx-base:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-graphics:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-controls:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-web:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-swing:$javafxVersion:$javafxPlatform")
-    implementation("org.openjfx:javafx-media:$javafxVersion:$javafxPlatform")
 }
 
 tasks.withType<JavaCompile> {
@@ -82,7 +68,6 @@ tasks.shadowJar {
     relocate("com.nimbusds", "shadow.com.nimbusds")
     relocate("com.microsoft.aad", "shadow.com.microsoft.aad")
     relocate("net.minidev", "shadow.net.minidev")
-    // Do NOT relocate JavaFX — it requires native libraries at fixed package paths
     mergeServiceFiles()
 }
 

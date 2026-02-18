@@ -294,8 +294,9 @@ public class AzureLoadTestDialog extends JDialog {
 
                     Frame ownerFrame = (Frame) getOwner();
                     LoadTestRunViewerDialog viewer = new LoadTestRunViewerDialog(
-                            ownerFrame, result.getTestRunId(),
-                            selected.getName(), result.getPortalUrl());
+                            ownerFrame, client, result.getEndpoint(),
+                            result.getTestRunId(), selected.getName(),
+                            result.getPortalUrl());
                     viewer.setVisible(true);
                 } catch (Exception ex) {
                     log.error("Failed to trigger load test", ex);
