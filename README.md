@@ -2,6 +2,8 @@
 
 A JMeter plugin that lets you trigger load tests on [Azure Load Testing](https://learn.microsoft.com/en-us/azure/load-testing/) directly from the JMeter GUI.
 
+![](recording.gif)
+
 ## Features
 
 - **Tools menu integration** — Adds a **"Run on Azure Load Testing"** item under the JMeter **Tools** menu

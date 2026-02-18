@@ -287,7 +287,36 @@ public final class AzureLoadTestingClient {
             BinaryData response = runClient.getTestRunWithResponse(testRunId, new RequestOptions())
                     .getValue();
             String json = response.toString();
+            System.out.println("[AzureClient] Test run status response: " + json);
             com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(json);
+
+            // Virtual users: may be at root level or inside loadTestConfiguration
+            long vusers = longOrZero(root, "virtualUsers");
+            if (vusers == 0) {
+                com.fasterxml.jackson.databind.JsonNode ltc = root.get("loadTestConfiguration");
+                if (ltc != null) {
+                    vusers = longOrZero(ltc, "engineInstances");
+                    long optLoad = longOrZero(ltc, "optionalLoadTestConfig");
+                    // Some responses have virtualUsers inside optionalLoadTestConfig
+                    if (vusers == 0) {
+                        vusers = longOrZero(ltc, "virtualUsers");
+                    }
+                }
+            }
+
+            // Duration: may be at root or computed from start/end
+            long durationMs = longOrZero(root, "duration");
+            if (durationMs == 0) {
+                String startStr = textOrEmpty(root, "startDateTime");
+                String endStr = textOrEmpty(root, "endDateTime");
+                if (!startStr.isEmpty() && !endStr.isEmpty()) {
+                    try {
+                        java.time.Instant start = java.time.Instant.parse(startStr);
+                        java.time.Instant end = java.time.Instant.parse(endStr);
+                        durationMs = java.time.Duration.between(start, end).toMillis();
+                    } catch (Exception ignore) { }
+                }
+            }
 
             TestRunStatus.Builder b = TestRunStatus.builder()
                     .testRunId(textOrEmpty(root, "testRunId"))
@@ -296,11 +325,12 @@ public final class AzureLoadTestingClient {
                     .portalUrl(textOrEmpty(root, "portalUrl"))
                     .startDateTime(textOrEmpty(root, "startDateTime"))
                     .endDateTime(textOrEmpty(root, "endDateTime"))
-                    .virtualUsers(longOrZero(root, "virtualUsers"))
-                    .durationMs(longOrZero(root, "duration"));
+                    .virtualUsers(vusers)
+                    .durationMs(durationMs);
 
             // Parse test run statistics (nested under testRunStatistics)
             com.fasterxml.jackson.databind.JsonNode stats = root.get("testRunStatistics");
+            System.out.println("[AzureClient] testRunStatistics node: " + (stats != null ? stats.toString() : "null"));
             if (stats != null && stats.isObject()) {
                 // Aggregate across all sampler/transaction entries
                 double totalReqs = 0, successReqs = 0, failedReqs = 0;
@@ -311,13 +341,23 @@ public final class AzureLoadTestingClient {
                 while (fields.hasNext()) {
                     var entry = fields.next();
                     com.fasterxml.jackson.databind.JsonNode s = entry.getValue();
-                    totalReqs += doubleOrZero(s, "transaction");
-                    successReqs += doubleOrZero(s, "sampleCount") - doubleOrZero(s, "errorCount");
-                    failedReqs += doubleOrZero(s, "errorCount");
+                    System.out.println("[AzureClient] Stats entry '" + entry.getKey() + "': " + s.toString());
+
+                    // The API uses "transaction" for total count in some versions,
+                    // "sampleCount" in others
+                    double sampleCount = doubleOrZero(s, "sampleCount");
+                    double txnCount = doubleOrZero(s, "transaction");
+                    double entryTotal = sampleCount > 0 ? sampleCount : txnCount;
+                    double errorCount = doubleOrZero(s, "errorCount");
+
+                    totalReqs += entryTotal;
+                    failedReqs += errorCount;
+                    successReqs += entryTotal - errorCount;
+
                     avgRt += doubleOrZero(s, "meanResTime");
-                    p90 += doubleOrZero(s, "pct1ResTime");   // typically p90
-                    p95 += doubleOrZero(s, "pct2ResTime");   // typically p95
-                    p99 += doubleOrZero(s, "pct3ResTime");   // typically p99
+                    p90 += doubleOrZero(s, "pct1ResTime");
+                    p95 += doubleOrZero(s, "pct2ResTime");
+                    p99 += doubleOrZero(s, "pct3ResTime");
                     errPct += doubleOrZero(s, "errorPct");
                     rps += doubleOrZero(s, "throughput");
                     count++;
