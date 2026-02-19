@@ -6,7 +6,7 @@ A JMeter plugin that lets you trigger load tests on [Azure Load Testing](https:/
 
 ## Features
 
-- **Tools menu integration** — Adds a **"Run on Azure Load Testing"** item under the JMeter **Tools** menu
+- **Run menu integration** — Adds a **"Run on Azure Load Testing"** item under the JMeter **Run** menu
 - **Azure authentication** — Supports Azure CLI, environment variables, managed identity, and interactive browser login via the Azure Identity SDK
 - **Resource discovery** — Lists all Azure Load Testing resources you have access to across subscriptions
 - **One-click test run** — Uploads the currently open JMX file and starts a test run on the selected resource
