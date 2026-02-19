@@ -59,7 +59,7 @@ cp build/libs/jmeter-azure-load-testing-plugin-1.0.0.jar $JMETER_HOME/lib/ext/
 ┌─────────────────────────────────────────────────────┐
 │  JMeter GUI                                         │
 │  ┌───────────────────────────────────────────────┐  │
-│  │  Tools → "Run on Azure Load Testing"          │  │
+│  │  Run → "Run on Azure Load Testing"          │  │
 │  └──────────────────┬────────────────────────────┘  │
 │                     │                                │
 │                     ▼                                │
