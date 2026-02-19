@@ -67,6 +67,7 @@ public class AzureLoadTestDialog extends JDialog {
     private final JTextField testNameField = new JTextField(30);
     private final JLabel statusLabel = new JLabel(" ");
     private final JButton runButton = new JButton("Run Load Test");
+    private final JButton createNewButton = new JButton("Create New Resource");
     private final JButton refreshButton = new JButton("Refresh");
     private final JButton cancelButton = new JButton("Cancel");
 
@@ -112,9 +113,15 @@ public class AzureLoadTestDialog extends JDialog {
         JPanel centerPanel = new JPanel(new BorderLayout(5, 5));
         centerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
+        JPanel resourceHeaderPanel = new JPanel(new BorderLayout());
         JLabel resourceLabel = new JLabel("Load Testing Resources:");
         resourceLabel.setFont(resourceLabel.getFont().deriveFont(Font.BOLD, 12f));
-        centerPanel.add(resourceLabel, BorderLayout.NORTH);
+        resourceHeaderPanel.add(resourceLabel, BorderLayout.WEST);
+        createNewButton.setFont(createNewButton.getFont().deriveFont(Font.PLAIN, 11f));
+        createNewButton.setEnabled(false);
+        createNewButton.addActionListener(e -> openCreateResourceDialog());
+        resourceHeaderPanel.add(createNewButton, BorderLayout.EAST);
+        centerPanel.add(resourceHeaderPanel, BorderLayout.NORTH);
 
         resourceList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         resourceList.setVisibleRowCount(8);
@@ -197,10 +204,20 @@ public class AzureLoadTestDialog extends JDialog {
                                 + "Make sure you are logged in and have the right permissions.");
                     } else {
                         statusLabel.setText(subs.size() + " subscription(s) found. Select one to list resources.");
+                        // Temporarily remove the action listener to avoid duplicate resource loads
+                        var listeners = subscriptionCombo.getActionListeners();
+                        for (var l : listeners) {
+                            subscriptionCombo.removeActionListener(l);
+                        }
                         for (AzureSubscription s : subs) {
                             subscriptionModel.addElement(s);
                         }
                         subscriptionCombo.setEnabled(true);
+                        createNewButton.setEnabled(true);
+                        // Restore listeners before selecting, so it fires exactly once
+                        for (var l : listeners) {
+                            subscriptionCombo.addActionListener(l);
+                        }
                         // Auto-select first subscription and trigger resource load
                         if (subscriptionModel.getSize() > 0) {
                             subscriptionCombo.setSelectedIndex(0);
@@ -253,6 +270,28 @@ public class AzureLoadTestDialog extends JDialog {
                 }
             }
         }.execute();
+    }
+
+    private void openCreateResourceDialog() {
+        AzureSubscription selectedSub = (AzureSubscription) subscriptionCombo.getSelectedItem();
+        if (selectedSub == null) {
+            JOptionPane.showMessageDialog(this,
+                    "Please select a subscription first.",
+                    "No Subscription Selected", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        CreateLoadTestResourceDialog createDialog = new CreateLoadTestResourceDialog(
+                this, client, selectedSub.getSubscriptionId());
+        createDialog.setVisible(true);
+
+        // After dialog closes, check if a resource was created
+        LoadTestResource created = createDialog.getCreatedResource();
+        if (created != null) {
+            listModel.addElement(created);
+            resourceList.setSelectedValue(created, true);
+            statusLabel.setText("Created and selected resource '" + created.getName() + "'.");
+        }
     }
 
     private void triggerTest() {

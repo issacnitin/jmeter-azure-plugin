@@ -133,6 +133,102 @@ public final class AzureLoadTestingClient {
     }
 
     /**
+     * List Azure regions where Azure Load Testing is available.
+     *
+     * @return a list of region display-name / region-name pairs
+     */
+    public static List<String[]> getAvailableRegions() {
+        // Azure Load Testing supported regions (display name, region name)
+        return List.of(
+                new String[]{"East US", "eastus"},
+                new String[]{"East US 2", "eastus2"},
+                new String[]{"West US", "westus"},
+                new String[]{"West US 2", "westus2"},
+                new String[]{"West US 3", "westus3"},
+                new String[]{"Central US", "centralus"},
+                new String[]{"North Central US", "northcentralus"},
+                new String[]{"South Central US", "southcentralus"},
+                new String[]{"North Europe", "northeurope"},
+                new String[]{"West Europe", "westeurope"},
+                new String[]{"UK South", "uksouth"},
+                new String[]{"UK West", "ukwest"},
+                new String[]{"France Central", "francecentral"},
+                new String[]{"Germany West Central", "germanywestcentral"},
+                new String[]{"Switzerland North", "switzerlandnorth"},
+                new String[]{"Southeast Asia", "southeastasia"},
+                new String[]{"East Asia", "eastasia"},
+                new String[]{"Japan East", "japaneast"},
+                new String[]{"Japan West", "japanwest"},
+                new String[]{"Australia East", "australiaeast"},
+                new String[]{"Australia Southeast", "australiasoutheast"},
+                new String[]{"Brazil South", "brazilsouth"},
+                new String[]{"Canada Central", "canadacentral"},
+                new String[]{"Central India", "centralindia"},
+                new String[]{"South India", "southindia"},
+                new String[]{"Korea Central", "koreacentral"},
+                new String[]{"South Africa North", "southafricanorth"},
+                new String[]{"UAE North", "uaenorth"}
+        );
+    }
+
+    /**
+     * Create a new resource group and an Azure Load Testing resource inside it.
+     *
+     * @param subscriptionId the subscription in which to create both
+     * @param resourceName   the name for both the resource group and the load test resource
+     * @param region         the Azure region name (e.g. "eastus")
+     * @return the newly created {@link LoadTestResource}
+     * @throws Exception if creation fails
+     */
+    public LoadTestResource createLoadTestResource(String subscriptionId, String resourceName, String region) throws Exception {
+        System.out.println("[AzureClient] Creating resource group '" + resourceName + "' in region '" + region + "'...");
+        log.info("Creating resource group '{}' in region '{}'...", resourceName, region);
+
+        com.azure.core.management.profile.AzureProfile profile =
+                new com.azure.core.management.profile.AzureProfile(
+                        null, subscriptionId,
+                        com.azure.core.management.AzureEnvironment.AZURE);
+
+        // Create or get the resource group
+        ResourceManager resourceManager = ResourceManager.authenticate(credential, profile)
+                .withSubscription(subscriptionId);
+
+        resourceManager.resourceGroups()
+                .define(resourceName)
+                .withRegion(region)
+                .create();
+        System.out.println("[AzureClient] Resource group '" + resourceName + "' created/verified.");
+        log.info("Resource group '{}' created/verified.", resourceName);
+
+        // Create the Azure Load Testing resource
+        System.out.println("[AzureClient] Creating Azure Load Testing resource '" + resourceName + "'...");
+        log.info("Creating Azure Load Testing resource '{}'...", resourceName);
+
+        LoadTestManager manager = LoadTestManager.authenticate(credential, profile);
+
+        com.azure.resourcemanager.loadtesting.models.LoadTestResource loadTestResource =
+                manager.loadTests()
+                        .define(resourceName)
+                        .withRegion(region)
+                        .withExistingResourceGroup(resourceName)
+                        .create();
+
+        String id = loadTestResource.id();
+        String name = loadTestResource.name();
+        String loc = loadTestResource.regionName();
+        String dataPlaneUri = loadTestResource.dataPlaneUri();
+        if (dataPlaneUri == null || dataPlaneUri.isBlank()) {
+            dataPlaneUri = "https://" + UUID.randomUUID().toString().substring(0, 8)
+                    + "." + loc + ".cnt-prod.loadtesting.azure.com";
+        }
+
+        System.out.println("[AzureClient] Created Load Testing resource: " + name + " (dataPlaneUri=" + dataPlaneUri + ")");
+        log.info("Created Load Testing resource: {} (dataPlaneUri={})", name, dataPlaneUri);
+
+        return new LoadTestResource(id, name, resourceName, subscriptionId, loc, dataPlaneUri);
+    }
+
+    /**
      * Create a test, upload the JMX file, and start a test run on the given
      * Azure Load Testing resource.
      *
@@ -272,6 +368,12 @@ public final class AzureLoadTestingClient {
 
     /**
      * Query the current status and metrics for a test run.
+     * <p>
+     * Uses the test-run GET response for status / timing and the
+     * {@code testRunStatistics} block when available (typically after the test
+     * completes).  During execution, falls back to the <b>Metrics API</b>
+     * ({@code listMetrics}) for live VirtualUsers, ResponseTime (avg / p90 /
+     * p95 / p99), RequestsPerSecond, and Errors.
      *
      * @param endpoint  the data-plane endpoint
      * @param testRunId the test run ID
@@ -290,90 +392,50 @@ public final class AzureLoadTestingClient {
             System.out.println("[AzureClient] Test run status response: " + json);
             com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(json);
 
-            // Virtual users: may be at root level or inside loadTestConfiguration
+            String status = textOrEmpty(root, "status");
+            String startStr = textOrEmpty(root, "startDateTime");
+            String endStr = textOrEmpty(root, "endDateTime");
+
+            // Virtual users from loadTestConfiguration (config / engine count)
             long vusers = longOrZero(root, "virtualUsers");
             if (vusers == 0) {
                 com.fasterxml.jackson.databind.JsonNode ltc = root.get("loadTestConfiguration");
                 if (ltc != null) {
                     vusers = longOrZero(ltc, "engineInstances");
-                    long optLoad = longOrZero(ltc, "optionalLoadTestConfig");
-                    // Some responses have virtualUsers inside optionalLoadTestConfig
                     if (vusers == 0) {
                         vusers = longOrZero(ltc, "virtualUsers");
                     }
                 }
             }
 
-            // Duration: may be at root or computed from start/end
+            // Duration: compute from start to end, or start to now while running
             long durationMs = longOrZero(root, "duration");
-            if (durationMs == 0) {
-                String startStr = textOrEmpty(root, "startDateTime");
-                String endStr = textOrEmpty(root, "endDateTime");
-                if (!startStr.isEmpty() && !endStr.isEmpty()) {
-                    try {
-                        java.time.Instant start = java.time.Instant.parse(startStr);
-                        java.time.Instant end = java.time.Instant.parse(endStr);
-                        durationMs = java.time.Duration.between(start, end).toMillis();
-                    } catch (Exception ignore) { }
-                }
+            if (durationMs == 0 && !startStr.isEmpty()) {
+                try {
+                    java.time.Instant start = java.time.Instant.parse(startStr);
+                    java.time.Instant end = endStr.isEmpty()
+                            ? java.time.Instant.now()
+                            : java.time.Instant.parse(endStr);
+                    durationMs = java.time.Duration.between(start, end).toMillis();
+                } catch (Exception ignore) { }
             }
 
             TestRunStatus.Builder b = TestRunStatus.builder()
                     .testRunId(textOrEmpty(root, "testRunId"))
                     .displayName(textOrEmpty(root, "displayName"))
-                    .status(textOrEmpty(root, "status"))
+                    .status(status)
                     .portalUrl(textOrEmpty(root, "portalUrl"))
-                    .startDateTime(textOrEmpty(root, "startDateTime"))
-                    .endDateTime(textOrEmpty(root, "endDateTime"))
+                    .startDateTime(startStr)
+                    .endDateTime(endStr)
                     .virtualUsers(vusers)
                     .durationMs(durationMs);
 
-            // Parse test run statistics (nested under testRunStatistics)
-            com.fasterxml.jackson.databind.JsonNode stats = root.get("testRunStatistics");
-            System.out.println("[AzureClient] testRunStatistics node: " + (stats != null ? stats.toString() : "null"));
-            if (stats != null && stats.isObject()) {
-                // Aggregate across all sampler/transaction entries
-                double totalReqs = 0, successReqs = 0, failedReqs = 0;
-                double avgRt = 0, p90 = 0, p95 = 0, p99 = 0, errPct = 0, rps = 0;
-                int count = 0;
+            // --- 1. Try testRunStatistics (populated after test completion) ---
+            boolean hasStats = parseTestRunStatistics(root, b);
 
-                var fields = stats.fields();
-                while (fields.hasNext()) {
-                    var entry = fields.next();
-                    com.fasterxml.jackson.databind.JsonNode s = entry.getValue();
-                    System.out.println("[AzureClient] Stats entry '" + entry.getKey() + "': " + s.toString());
-
-                    // The API uses "transaction" for total count in some versions,
-                    // "sampleCount" in others
-                    double sampleCount = doubleOrZero(s, "sampleCount");
-                    double txnCount = doubleOrZero(s, "transaction");
-                    double entryTotal = sampleCount > 0 ? sampleCount : txnCount;
-                    double errorCount = doubleOrZero(s, "errorCount");
-
-                    totalReqs += entryTotal;
-                    failedReqs += errorCount;
-                    successReqs += entryTotal - errorCount;
-
-                    avgRt += doubleOrZero(s, "meanResTime");
-                    p90 += doubleOrZero(s, "pct1ResTime");
-                    p95 += doubleOrZero(s, "pct2ResTime");
-                    p99 += doubleOrZero(s, "pct3ResTime");
-                    errPct += doubleOrZero(s, "errorPct");
-                    rps += doubleOrZero(s, "throughput");
-                    count++;
-                }
-
-                if (count > 0) {
-                    b.totalRequests(totalReqs)
-                            .successfulRequests(successReqs)
-                            .failedRequests(failedReqs)
-                            .avgResponseTimeMs(avgRt / count)
-                            .p90ResponseTimeMs(p90 / count)
-                            .p95ResponseTimeMs(p95 / count)
-                            .p99ResponseTimeMs(p99 / count)
-                            .errorPercentage(errPct / count)
-                            .requestsPerSecond(rps);
-                }
+            // --- 2. Fall back to the Metrics API for live data ---
+            if (!hasStats && isMetricsEligible(status)) {
+                fetchLiveMetrics(runClient, testRunId, startStr, endStr, b);
             }
 
             return b.build();
@@ -384,6 +446,230 @@ public final class AzureLoadTestingClient {
                     .testRunId(testRunId)
                     .status("UNKNOWN")
                     .build();
+        }
+    }
+
+    // ------------------------------------------------------------ //
+    //  testRunStatistics parsing (available after test completion)  //
+    // ------------------------------------------------------------ //
+
+    /**
+     * Parse the {@code testRunStatistics} block from the test-run response.
+     *
+     * @return {@code true} if meaningful statistics were found
+     */
+    private static boolean parseTestRunStatistics(com.fasterxml.jackson.databind.JsonNode root,
+                                                  TestRunStatus.Builder b) {
+        com.fasterxml.jackson.databind.JsonNode stats = root.get("testRunStatistics");
+        System.out.println("[AzureClient] testRunStatistics node: "
+                + (stats != null ? stats.toString() : "null"));
+        if (stats == null || !stats.isObject() || stats.isEmpty()) {
+            return false;
+        }
+
+        double totalReqs = 0, successReqs = 0, failedReqs = 0;
+        double avgRt = 0, p90 = 0, p95 = 0, p99 = 0, errPct = 0, rps = 0;
+        int count = 0;
+
+        var fields = stats.fields();
+        while (fields.hasNext()) {
+            var entry = fields.next();
+            com.fasterxml.jackson.databind.JsonNode s = entry.getValue();
+            System.out.println("[AzureClient] Stats entry '" + entry.getKey() + "': " + s.toString());
+
+            double sampleCount = doubleOrZero(s, "sampleCount");
+            double txnCount = doubleOrZero(s, "transaction");
+            double entryTotal = sampleCount > 0 ? sampleCount : txnCount;
+            double errorCount = doubleOrZero(s, "errorCount");
+
+            totalReqs += entryTotal;
+            failedReqs += errorCount;
+            successReqs += entryTotal - errorCount;
+
+            avgRt += doubleOrZero(s, "meanResTime");
+            p90 += doubleOrZero(s, "pct1ResTime");
+            p95 += doubleOrZero(s, "pct2ResTime");
+            p99 += doubleOrZero(s, "pct3ResTime");
+            errPct += doubleOrZero(s, "errorPct");
+            rps += doubleOrZero(s, "throughput");
+            count++;
+        }
+
+        if (count > 0) {
+            b.totalRequests(totalReqs)
+                    .successfulRequests(successReqs)
+                    .failedRequests(failedReqs)
+                    .avgResponseTimeMs(avgRt / count)
+                    .p90ResponseTimeMs(p90 / count)
+                    .p95ResponseTimeMs(p95 / count)
+                    .p99ResponseTimeMs(p99 / count)
+                    .errorPercentage(errPct / count)
+                    .requestsPerSecond(rps);
+            return true;
+        }
+        return false;
+    }
+
+    // ------------------------------------------------- //
+    //  Live Metrics API (works during test execution)   //
+    // ------------------------------------------------- //
+
+    private static boolean isMetricsEligible(String status) {
+        if (status == null) return false;
+        String s = status.toUpperCase();
+        return "EXECUTING".equals(s) || "DONE".equals(s) || "DEPROVISIONING".equals(s);
+    }
+
+    /**
+     * Fetch real-time metrics from the Azure Load Testing Metrics API and
+     * populate the builder with live values for VirtualUsers, ResponseTime
+     * (average, p90, p95, p99), RequestsPerSecond, and Errors.
+     */
+    private void fetchLiveMetrics(LoadTestRunClient runClient, String testRunId,
+                                  String startDateTime, String endDateTime,
+                                  TestRunStatus.Builder b) {
+        if (startDateTime == null || startDateTime.isEmpty()) {
+            return;
+        }
+
+        try {
+            String end = (endDateTime == null || endDateTime.isEmpty())
+                    ? java.time.Instant.now().toString()
+                    : endDateTime;
+            String timespan = startDateTime + "/" + end;
+            String ns = "LoadTestRunMetrics";
+
+            System.out.println("[AzureClient] Fetching live metrics, timespan=" + timespan);
+
+            // VirtualUsers
+            double vu = getLatestMetricValue(runClient, testRunId,
+                    "VirtualUsers", ns, timespan, "Average");
+            if (vu > 0) {
+                b.virtualUsers((long) vu);
+            }
+
+            // ResponseTime – Average
+            double avgRt = getLatestMetricValue(runClient, testRunId,
+                    "ResponseTime", ns, timespan, "Average");
+            if (avgRt > 0) {
+                b.avgResponseTimeMs(avgRt);
+            }
+
+            // ResponseTime – Percentile90
+            double p90 = getLatestMetricValue(runClient, testRunId,
+                    "ResponseTime", ns, timespan, "Percentile90");
+            if (p90 > 0) {
+                b.p90ResponseTimeMs(p90);
+            }
+
+            // ResponseTime – Percentile95
+            double p95 = getLatestMetricValue(runClient, testRunId,
+                    "ResponseTime", ns, timespan, "Percentile95");
+            if (p95 > 0) {
+                b.p95ResponseTimeMs(p95);
+            }
+
+            // ResponseTime – Percentile99
+            double p99 = getLatestMetricValue(runClient, testRunId,
+                    "ResponseTime", ns, timespan, "Percentile99");
+            if (p99 > 0) {
+                b.p99ResponseTimeMs(p99);
+            }
+
+            // TotalRequests (use Total aggregation to get cumulative count)
+            double totalReqs = getLatestMetricValue(runClient, testRunId,
+                    "TotalRequests", ns, timespan, "Total");
+            if (totalReqs > 0) {
+                b.totalRequests(totalReqs);
+
+                // Compute RPS from total requests and elapsed time
+                try {
+                    java.time.Instant startInstant = java.time.Instant.parse(startDateTime);
+                    java.time.Instant endInstant = (endDateTime == null || endDateTime.isEmpty())
+                            ? java.time.Instant.now()
+                            : java.time.Instant.parse(endDateTime);
+                    double elapsedSecs = java.time.Duration.between(startInstant, endInstant).toMillis() / 1000.0;
+                    if (elapsedSecs > 0) {
+                        b.requestsPerSecond(totalReqs / elapsedSecs);
+                    }
+                } catch (Exception ignore) { }
+            }
+
+            // Errors (use Total aggregation to get cumulative error count)
+            double errorCount = getLatestMetricValue(runClient, testRunId,
+                    "Errors", ns, timespan, "Total");
+            if (totalReqs > 0) {
+                b.failedRequests(errorCount);
+                b.successfulRequests(totalReqs - errorCount);
+                double errPct = (errorCount / totalReqs) * 100.0;
+                b.errorPercentage(errPct);
+            }
+
+            System.out.println("[AzureClient] Live metrics: vu=" + vu
+                    + " avgRt=" + avgRt + " p90=" + p90 + " p95=" + p95 + " p99=" + p99
+                    + " totalReqs=" + totalReqs + " errors=" + errorCount);
+        } catch (Exception e) {
+            System.out.println("[AzureClient] Failed to fetch live metrics: " + e.getMessage());
+            log.warn("Failed to fetch live metrics: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Call the Metrics API for a single metric and return the <b>latest</b>
+     * data-point value across all returned time-series.
+     *
+     * @param aggregation aggregation type (e.g. "Average", "Percentile90") or {@code null}
+     * @return the latest metric value, or {@code 0} if unavailable
+     */
+    private double getLatestMetricValue(LoadTestRunClient runClient, String testRunId,
+                                        String metricName, String namespace,
+                                        String timespan, String aggregation) {
+        try {
+            RequestOptions options = new RequestOptions();
+            if (aggregation != null) {
+                options.addQueryParam("aggregation", aggregation);
+            }
+
+            double latestValue = 0;
+            String latestTimestamp = "";
+
+            for (BinaryData item : runClient.listMetrics(testRunId, metricName,
+                    namespace, timespan, options)) {
+                com.fasterxml.jackson.databind.JsonNode node = MAPPER.readTree(item.toString());
+
+                // Each item is a TimeSeriesElement with "data" array and "dimensionValues"
+                com.fasterxml.jackson.databind.JsonNode data = node.get("data");
+                if (data != null && data.isArray()) {
+                    for (int i = data.size() - 1; i >= 0; i--) {
+                        com.fasterxml.jackson.databind.JsonNode point = data.get(i);
+                        double val = doubleOrZero(point, "value");
+                        String ts = textOrEmpty(point, "timestamp");
+                        if (ts.isEmpty()) {
+                            ts = textOrEmpty(point, "timeStamp");
+                        }
+                        if (val > 0 && ts.compareTo(latestTimestamp) >= 0) {
+                            latestValue = val;
+                            latestTimestamp = ts;
+                            break; // data is chronological; last non-zero wins
+                        }
+                    }
+                }
+
+                // Some response shapes put value directly on the element
+                double directVal = doubleOrZero(node, "value");
+                if (directVal > 0 && latestValue == 0) {
+                    latestValue = directVal;
+                }
+            }
+
+            System.out.println("[AzureClient] Metric " + metricName
+                    + " (" + aggregation + "): " + latestValue);
+            return latestValue;
+        } catch (Exception e) {
+            System.out.println("[AzureClient] Error fetching metric " + metricName
+                    + " (" + aggregation + "): " + e.getMessage());
+            log.debug("Error fetching metric {} ({}): {}", metricName, aggregation, e.getMessage());
+            return 0;
         }
     }
 

@@ -78,14 +78,17 @@ public final class TestRunStatus {
     public double getErrorPercentage() { return errorPercentage; }
     public double getRequestsPerSecond() { return requestsPerSecond; }
 
-    /** Whether the test run is still in progress (not yet completed or failed). */
+    /**
+     * Whether the test run is still in progress (not yet reached a terminal state).
+     * Terminal states: DONE, FAILED, CANCELLED, VALIDATION_FAILURE.
+     * CANCELLING is <b>not</b> terminal — the run is still shutting down.
+     */
     public boolean isRunning() {
         return status != null
                 && !"DONE".equalsIgnoreCase(status)
                 && !"FAILED".equalsIgnoreCase(status)
                 && !"CANCELLED".equalsIgnoreCase(status)
-                && !"VALIDATION_FAILURE".equalsIgnoreCase(status)
-                && !"CANCELLING".equalsIgnoreCase(status);
+                && !"VALIDATION_FAILURE".equalsIgnoreCase(status);
     }
 
     public static Builder builder() { return new Builder(); }

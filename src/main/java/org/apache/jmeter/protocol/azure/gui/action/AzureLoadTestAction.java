@@ -125,7 +125,7 @@ public class AzureLoadTestAction extends AbstractAction implements MenuCreator {
 
     @Override
     public JMenuItem[] getMenuItemsAtLocation(MENU_LOCATION location) {
-        if (location == MENU_LOCATION.TOOLS) {
+        if (location == MENU_LOCATION.RUN) {
             JMenuItem menuItem = new JMenuItem("Run on Azure Load Testing", KeyEvent.VK_UNDEFINED);
             menuItem.setName(AZURE_LOAD_TEST);
             menuItem.setActionCommand(AZURE_LOAD_TEST);

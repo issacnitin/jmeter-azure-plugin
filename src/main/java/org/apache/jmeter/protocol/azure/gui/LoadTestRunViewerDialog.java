@@ -85,6 +85,9 @@ class LoadTestRunViewerDialog extends JDialog {
     private final JLabel lastUpdatedLabel = new JLabel(" ");
     private JButton cancelButton;
     private Timer pollingTimer;
+    private Timer durationTimer;
+    private volatile java.time.Instant testStartInstant;
+    private volatile java.time.Instant testEndInstant;
 
     LoadTestRunViewerDialog(Frame owner, AzureLoadTestingClient client,
                             String endpoint, String testRunId, String resourceName, String portalUrl) {
@@ -215,6 +218,11 @@ class LoadTestRunViewerDialog extends JDialog {
         pollingTimer = new Timer(POLL_INTERVAL_MS, e -> fetchAndUpdate());
         pollingTimer.setRepeats(true);
         pollingTimer.start();
+
+        // 1-second timer for continuous duration display
+        durationTimer = new Timer(1_000, e -> tickDuration());
+        durationTimer.setRepeats(true);
+        durationTimer.start();
     }
 
     private void stopPolling() {
@@ -222,6 +230,21 @@ class LoadTestRunViewerDialog extends JDialog {
             pollingTimer.stop();
             pollingTimer = null;
         }
+        if (durationTimer != null) {
+            durationTimer.stop();
+            durationTimer = null;
+        }
+    }
+
+    private void tickDuration() {
+        java.time.Instant start = testStartInstant;
+        if (start == null) {
+            return;
+        }
+        java.time.Instant end = testEndInstant != null ? testEndInstant : java.time.Instant.now();
+        long secs = java.time.Duration.between(start, end).getSeconds();
+        if (secs < 0) secs = 0;
+        durationValueLabel.setText(String.format("%d:%02d:%02d", secs / 3600, (secs % 3600) / 60, secs % 60));
     }
 
     private void fetchAndUpdate() {
@@ -260,12 +283,19 @@ class LoadTestRunViewerDialog extends JDialog {
         statusValueLabel.setText(formatStatus(s.getStatus()));
         statusValueLabel.setForeground(statusColor(s.getStatus()));
 
-        if (s.getDurationMs() > 0) {
-            long secs = s.getDurationMs() / 1000;
-            durationValueLabel.setText(String.format("%d:%02d:%02d", secs / 3600, (secs % 3600) / 60, secs % 60));
-        } else if (!s.getStartDateTime().isEmpty()) {
-            durationValueLabel.setText("In progress...");
-        } else {
+        // Update start/end instants for the continuous duration timer
+        if (!s.getStartDateTime().isEmpty() && testStartInstant == null) {
+            try {
+                testStartInstant = java.time.Instant.parse(s.getStartDateTime());
+            } catch (Exception ignore) { }
+        }
+        if (!s.getEndDateTime().isEmpty() && testEndInstant == null) {
+            try {
+                testEndInstant = java.time.Instant.parse(s.getEndDateTime());
+            } catch (Exception ignore) { }
+        }
+        // Let tickDuration() handle the label; only show "--" if we have no start yet
+        if (testStartInstant == null) {
             durationValueLabel.setText("--");
         }
 
